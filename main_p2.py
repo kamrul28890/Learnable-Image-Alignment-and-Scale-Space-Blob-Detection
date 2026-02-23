@@ -245,7 +245,7 @@ def blob_detection(
         radii.append(radius)
 
     # Step 6: Visualise using the provided draw_all_circles helper.
-    image_np = image.numpy()  # (1, H, W)
+    image_np = image.squeeze().numpy() # shape: (H, W)
     draw_all_circles(image_np, cx, cy, radii, output_name, color='r')
     print(f"  Saved to: {output_name}")
 
