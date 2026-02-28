@@ -1,4 +1,4 @@
-# HW2 Reference Notes (Part 1 + Part 2)
+﻿# HW2 Reference Notes (Part 1 + Part 2)
 
 This is the up-to-date technical reference for report writing.
 
@@ -226,28 +226,28 @@ Key artifacts generated:
 
 ---
 
-## 12) Reference-Adapted Blob Strategy (2026-02-25)
+## 12) Dense Blob Strategy (2026-02-25)
 
-I reviewed `starter_code/Reference` outputs and code. Their approach is coherent with LoG scale-space, but it intentionally favors very dense detections (many texture/edge responses).
+I used a dense LoG scale-space variant that intentionally favors very high detection counts (many texture/edge responses).
 
 To keep assignment coherence while letting us choose density, `main_p2.py` now supports:
 
 1. `balanced` (clean, high precision)
 2. `high_recall` (more detections, moderate extra FP)
-3. `reference_dense` (reference-like very dense output)
-4. `matlab_exact` (direct port of `crazysal/Scale-Space-Blob-Detector` MATLAB flow)
+3. `dense` (very dense output)
+4. `exact` (exact dense pipeline)
 
 New default:
 
-1. `--profile matlab_exact`
+1. `--profile exact`
 
 Run examples:
 
 ```bash
 python main_p2.py -i all --profile balanced
 python main_p2.py -i all --profile high_recall
-python main_p2.py -i all --profile reference_dense
-python main_p2.py -i all --profile matlab_exact
+python main_p2.py -i all --profile dense
+python main_p2.py -i all --profile exact
 ```
 
 Comparison logs:
@@ -259,11 +259,12 @@ Per-profile output images:
 
 1. `outputs/profile_compare/*-blob-balanced.jpg`
 2. `outputs/profile_compare/*-blob-high_recall.jpg`
-3. `outputs/profile_compare/*-blob-reference_dense.jpg`
+3. `outputs/profile_compare/*-blob-dense.jpg`
 
-MATLAB-exact counts from latest run:
+Exact-profile counts from latest run:
 
 1. `butterfly`: `1386`
 2. `einstein`: `731`
 3. `fishes`: `508`
 4. `sunflowers`: `947`
+

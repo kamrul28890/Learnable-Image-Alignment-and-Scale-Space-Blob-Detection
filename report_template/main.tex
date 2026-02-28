@@ -1,0 +1,52 @@
+\documentclass[oneside,11pt,letter]{article}
+
+% General include (DO NOT MODIFY)
+\usepackage{tikz}
+\include{style_include}
+\usepackage{symbols}
+\usepackage{bbm}
+\usepackage{bm}
+\usepackage{multicol}
+\usepackage{stackengine}
+%\usepackage{currfile}
+\usepackage[shortlabels]{enumitem}
+\newcommand\xrowht[2][0]{\addstackgap[.5\dimexpr#2\relax]{\vphantom{#1}}}
+\newcommand{\type}{booklet}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{mdframed,lipsum}
+\input{math_commands}
+
+\newcommand{\myname}{}
+\newcommand{\report}{}
+\input{student_response/report}
+
+
+\begin{document}
+
+% Input student response here
+
+%------------------------- Title Page ----------------------------------
+\thispagestyle{empty}
+\begin{mdframed}
+\baselineskip2.5ex
+{\bf CS59300CVD: Computer Vision with Deep Learning}
+\hfill
+Spring 2026
+
+{\Large
+\begin{center}
+{\bf \sf Assignment 2}
+\end{center}
+}
+
+{\bf \myname}
+\hfill
+Date: \today
+\end{mdframed}
+
+\report{}
+
+%%%%%%%%%%%% END OF PROBLEMS LIST
+%\end{enumerate}
+\end{document}
+

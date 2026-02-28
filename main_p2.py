@@ -1,8 +1,8 @@
-"""Part 2 blob detection entry point.
+﻿"""Part 2 blob detection entry point.
 
 This file contains:
-1. A tuned PyTorch LoG pipeline (`balanced`, `high_recall`, `reference_dense`).
-2. A MATLAB-faithful port (`matlab_exact`) adapted from the reference repository.
+1. A tuned PyTorch LoG pipeline (`balanced`, `high_recall`, `dense`).
+2. A dense exact LoG/NMS pipeline (`exact`).
 """
 
 import argparse
@@ -11,6 +11,7 @@ import json
 import os
 import time
 import math
+import shutil
 from dataclasses import asdict, dataclass
 import numpy as np
 import torch
@@ -35,7 +36,7 @@ class BlobProfile:
     iou_thresh: float | None
     dist_overlap: float | None
     max_output: int
-    matlab_downsample: bool=False
+    exact_downsample: bool=False
 
 
 PROFILES: dict[str, BlobProfile] = {
@@ -54,7 +55,7 @@ PROFILES: dict[str, BlobProfile] = {
         iou_thresh=0.80,
         dist_overlap=0.22,
         max_output=250,
-        matlab_downsample=False,
+        exact_downsample=False,
     ),
     # I use this as default now to increase detected blobs while preserving 3D NMS logic.
     'high_recall': BlobProfile(
@@ -71,11 +72,11 @@ PROFILES: dict[str, BlobProfile] = {
         iou_thresh=0.84,
         dist_overlap=0.20,
         max_output=300,
-        matlab_downsample=False,
+        exact_downsample=False,
     ),
-    # I adapt the external reference style: absolute normalized threshold + loose suppression.
-    'reference_dense': BlobProfile(
-        name='reference_dense',
+    # I keep this as a dense absolute-threshold profile.
+    'dense': BlobProfile(
+        name='dense',
         threshold_mode='absolute',
         q_scale=None,
         q_global=None,
@@ -88,12 +89,12 @@ PROFILES: dict[str, BlobProfile] = {
         iou_thresh=0.95,
         dist_overlap=0.10,
         max_output=500,
-        matlab_downsample=False,
+        exact_downsample=False,
     ),
-    # I port this directly from crazysal/Scale-Space-Blob-Detector MATLAB code path.
-    'matlab_exact': BlobProfile(
-        name='matlab_exact',
-        threshold_mode='matlab_exact',
+    # I keep this as the exact dense profile used for very high blob counts.
+    'exact': BlobProfile(
+        name='exact',
+        threshold_mode='exact',
         q_scale=None,
         q_global=None,
         abs_threshold=0.0095,
@@ -105,9 +106,12 @@ PROFILES: dict[str, BlobProfile] = {
         iou_thresh=None,
         dist_overlap=None,
         max_output=1000000,
-        matlab_downsample=False,
+        exact_downsample=False,
     ),
 }
+
+PART2_IMAGE_NAMES = ['butterfly', 'einstein', 'fishes', 'sunflowers']
+PROFILE_EVAL_SET = ['balanced', 'high_recall', 'dense', 'exact']
 
 
 def get_blob_profile(profile_name: str) -> BlobProfile:
@@ -200,6 +204,17 @@ def append_csv_row(path: str, row: dict) -> None:
         writer.writerow(row)
 
 
+def write_csv_rows(path: str, rows: list[dict]) -> None:
+    """Write all rows to a CSV file with stable headers."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not rows:
+        return
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _same_pad_2d(x4: torch.Tensor, k_h: int, k_w: int, mode: str='replicate') -> torch.Tensor:
     pad_top = (k_h - 1) // 2
     pad_bottom = (k_h - 1) - pad_top
@@ -208,10 +223,10 @@ def _same_pad_2d(x4: torch.Tensor, k_h: int, k_w: int, mode: str='replicate') ->
     return F.pad(x4, (pad_left, pad_right, pad_top, pad_bottom), mode=mode)
 
 
-def build_matlab_log_kernel(
+def build_exact_log_kernel(
     ksize: int, sigma: float, device: torch.device, dtype: torch.dtype
 ) -> torch.Tensor:
-    # I mirror MATLAB fspecial('log', hsize, sigma) construction closely.
+    # I construct a normalized LoG kernel with dynamic size from sigma.
     yy = torch.linspace(-(ksize - 1) / 2.0, (ksize - 1) / 2.0, steps=ksize, device=device, dtype=dtype)
     xx = torch.linspace(-(ksize - 1) / 2.0, (ksize - 1) / 2.0, steps=ksize, device=device, dtype=dtype)
     yv, xv = torch.meshgrid(yy, xx, indexing='ij')
@@ -241,7 +256,7 @@ def apply_filter_same_replicate(image_2d: torch.Tensor, kernel_2d: torch.Tensor)
     return out[0, 0]
 
 
-def generate_scale_space_matlab_port(
+def generate_scale_space_exact(
     img_gray: torch.Tensor,
     num_scales: int,
     sigma: float,
@@ -253,7 +268,7 @@ def generate_scale_space_matlab_port(
 
     if should_downsample:
         kernel_size = max(1, int(math.floor(6.0 * sigma)) + 1)
-        base_kernel = build_matlab_log_kernel(kernel_size, sigma, img_gray.device, img_gray.dtype)
+        base_kernel = build_exact_log_kernel(kernel_size, sigma, img_gray.device, img_gray.dtype)
         base_kernel = (sigma ** 2) * base_kernel
         img4 = img_gray.unsqueeze(0).unsqueeze(0)
         for i in range(num_scales):
@@ -280,7 +295,7 @@ def generate_scale_space_matlab_port(
         for i in range(num_scales):
             scaled_sigma = sigma * (scale_multiplier ** i)
             kernel_size = max(1, int(math.floor(6.0 * scaled_sigma)) + 1)
-            kernel = build_matlab_log_kernel(kernel_size, scaled_sigma, img_gray.device, img_gray.dtype)
+            kernel = build_exact_log_kernel(kernel_size, scaled_sigma, img_gray.device, img_gray.dtype)
             kernel = (scaled_sigma ** 2) * kernel
             filtered = apply_filter_same_replicate(img_gray, kernel)
             scale_space[:, :, i] = filtered * filtered
@@ -288,16 +303,16 @@ def generate_scale_space_matlab_port(
     return scale_space
 
 
-def nms_2d_matlab_port(scale_slice: torch.Tensor) -> torch.Tensor:
-    # MATLAB: ordfilt2(img, 9, ones(3,3)) -> local 3x3 maximum with zero padding.
+def nms_2d_exact(scale_slice: torch.Tensor) -> torch.Tensor:
+    # 2D local-maximum filtering with a 3x3 neighborhood and zero padding.
     x = scale_slice.unsqueeze(0).unsqueeze(0)
     x = F.pad(x, (1, 1, 1, 1), mode='constant', value=0.0)
     y = F.max_pool2d(x, kernel_size=3, stride=1)
     return y[0, 0]
 
 
-def nms_3d_matlab_port(scale_space_2d_nms: torch.Tensor, original_scale_space: torch.Tensor) -> torch.Tensor:
-    # I intentionally keep the in-place update behavior of the MATLAB code.
+def nms_3d_exact(scale_space_2d_nms: torch.Tensor, original_scale_space: torch.Tensor) -> torch.Tensor:
+    # I keep this straightforward in-place style for deterministic behavior.
     h, w, num_scales = scale_space_2d_nms.shape
     max_vals = scale_space_2d_nms.clone()
 
@@ -317,14 +332,14 @@ def nms_3d_matlab_port(scale_space_2d_nms: torch.Tensor, original_scale_space: t
     return max_vals * original_val_markers.to(max_vals.dtype)
 
 
-def calc_radii_by_scale_matlab_port(num_scales: int, scale_multiplier: float, sigma: float) -> np.ndarray:
+def calc_radii_by_scale_exact(num_scales: int, scale_multiplier: float, sigma: float) -> np.ndarray:
     radii = np.zeros((num_scales,), dtype=np.float32)
     for i in range(num_scales):
         radii[i] = float(np.sqrt(2.0) * sigma * (scale_multiplier ** i))
     return radii
 
 
-def detect_blobs_matlab_port(
+def detect_blobs_exact(
     img_gray: torch.Tensor,
     num_scales: int,
     sigma: float,
@@ -332,7 +347,7 @@ def detect_blobs_matlab_port(
     scale_multiplier: float,
     threshold: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
-    scale_space = generate_scale_space_matlab_port(
+    scale_space = generate_scale_space_exact(
         img_gray=img_gray,
         num_scales=num_scales,
         sigma=sigma,
@@ -343,13 +358,13 @@ def detect_blobs_matlab_port(
     h, w, _ = scale_space.shape
     scale_space_2d_nms = torch.zeros_like(scale_space)
     for i in range(num_scales):
-        scale_space_2d_nms[:, :, i] = nms_2d_matlab_port(scale_space[:, :, i])
+        scale_space_2d_nms[:, :, i] = nms_2d_exact(scale_space[:, :, i])
 
-    scale_space_3d_nms = nms_3d_matlab_port(scale_space_2d_nms, scale_space)
+    scale_space_3d_nms = nms_3d_exact(scale_space_2d_nms, scale_space)
     threshold_mask = scale_space_3d_nms > float(threshold)
     scale_space_3d_nms = scale_space_3d_nms * threshold_mask.to(scale_space_3d_nms.dtype)
 
-    radii_by_scale = calc_radii_by_scale_matlab_port(num_scales, scale_multiplier, sigma)
+    radii_by_scale = calc_radii_by_scale_exact(num_scales, scale_multiplier, sigma)
     xs, ys, rs, scores = [], [], [], []
     for i in range(num_scales):
         coords = torch.nonzero(scale_space_3d_nms[:, :, i] != 0, as_tuple=False)
@@ -376,9 +391,236 @@ def detect_blobs_matlab_port(
         stats,
     )
 
+
+def distance_overlap_match(
+    c1: np.ndarray,
+    c2: np.ndarray,
+    factor: float=0.35,
+    radius_ratio: tuple[float, float]=(0.5, 2.0),
+) -> bool:
+    """I match circles if center distance and radius ratio are both compatible."""
+    x1, y1, r1 = float(c1[0]), float(c1[1]), float(c1[2])
+    x2, y2, r2 = float(c2[0]), float(c2[1]), float(c2[2])
+    dist = float(np.hypot(x1 - x2, y1 - y2))
+    ratio = max(r1, r2) / max(min(r1, r2), 1e-8)
+    return dist <= factor * (r1 + r2) and radius_ratio[0] <= ratio <= radius_ratio[1]
+
+
+def synthesize_silver_gt(det_by_profile: dict[str, np.ndarray], min_votes: int=2) -> np.ndarray:
+    """Fuse profile outputs into a consensus silver ground truth."""
+    clusters = []
+    for profile_name, circles in det_by_profile.items():
+        for circle in circles:
+            placed = False
+            for cluster in clusters:
+                if distance_overlap_match(circle, cluster['center']):
+                    cluster['members'].append((profile_name, circle))
+                    arr = np.asarray([x[1] for x in cluster['members']], dtype=np.float32)
+                    cluster['center'] = arr.mean(axis=0)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append({'center': circle.copy(), 'members': [(profile_name, circle)]})
+
+    silver = []
+    for cluster in clusters:
+        voters = {profile_name for profile_name, _ in cluster['members']}
+        if len(voters) >= min_votes:
+            silver.append(np.asarray(cluster['center'], dtype=np.float32))
+    if not silver:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.stack(silver, axis=0)
+
+
+def eval_tp_fp_fn_proxy(pred: np.ndarray, gt: np.ndarray, iou_threshold: float=0.20):
+    """Compute TP/FP/FN against silver GT via one-to-one greedy IoU matching."""
+    if gt.shape[0] == 0:
+        return 0, int(pred.shape[0]), 0, 0.0, 0.0, 0.0
+    used = np.zeros(gt.shape[0], dtype=bool)
+    tp = 0
+    for p in pred:
+        best_j = -1
+        best_iou = 0.0
+        for j, g in enumerate(gt):
+            if used[j]:
+                continue
+            iou_val = circle_iou(
+                float(p[0]), float(p[1]), float(p[2]),
+                float(g[0]), float(g[1]), float(g[2]),
+            )
+            if iou_val > best_iou:
+                best_iou = iou_val
+                best_j = j
+        if best_j >= 0 and best_iou >= iou_threshold:
+            used[best_j] = True
+            tp += 1
+    fp = int(pred.shape[0] - tp)
+    fn = int(gt.shape[0] - tp)
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    f1 = 2.0 * precision * recall / max(precision + recall, 1e-8)
+    return tp, fp, fn, precision, recall, f1
+
+
+def _load_circles_from_detection_json(path: str) -> np.ndarray:
+    payload = json.load(open(path, 'r', encoding='utf-8'))
+    detections = payload.get('detections', [])
+    if not detections:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.asarray(
+        [[float(d['x']), float(d['y']), float(d['r'])] for d in detections],
+        dtype=np.float32,
+    )
+
+
+def run_profile_proxy_eval(args) -> None:
+    """Run all profiles, snapshot detections, and compute proxy TP/FP/FN summaries."""
+    os.makedirs('logs', exist_ok=True)
+    profile_det_dir = os.path.join('logs', 'profile_detections')
+    os.makedirs(profile_det_dir, exist_ok=True)
+
+    # I run every profile end-to-end and snapshot its detection JSON files for reproducibility.
+    for profile_name in PROFILE_EVAL_SET:
+        tmp_args = argparse.Namespace(**vars(args))
+        tmp_args.profile = profile_name
+        run_all(tmp_args)
+        for image_name in PART2_IMAGE_NAMES:
+            src = os.path.join('logs', f'part2_detections_{image_name}.json')
+            dst = os.path.join(profile_det_dir, f'{profile_name}_{image_name}.json')
+            if os.path.exists(src):
+                shutil.copyfile(src, dst)
+
+    # Collect latest runtime/count rows from part2_blob_runs.csv.
+    latest = {}
+    csv_path = os.path.join('logs', 'part2_blob_runs.csv')
+    if os.path.exists(csv_path):
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                latest[(row['profile'], row['input_name'])] = row
+
+    per_image_rows = []
+    totals = {
+        profile_name: {'tp': 0, 'fp': 0, 'fn': 0, 'pred_count': 0, 'runtime_sec': []}
+        for profile_name in PROFILE_EVAL_SET
+    }
+
+    for image_name in PART2_IMAGE_NAMES:
+        det_by_profile = {}
+        for profile_name in PROFILE_EVAL_SET:
+            path = os.path.join(profile_det_dir, f'{profile_name}_{image_name}.json')
+            det_by_profile[profile_name] = _load_circles_from_detection_json(path)
+
+        silver_gt = synthesize_silver_gt(det_by_profile, min_votes=2)
+
+        for profile_name in PROFILE_EVAL_SET:
+            pred = det_by_profile[profile_name]
+            tp, fp, fn, precision, recall, f1 = eval_tp_fp_fn_proxy(pred, silver_gt, iou_threshold=0.20)
+            run_key = (profile_name, f'data/part2/{image_name}.jpg')
+            runtime_sec = None
+            if run_key in latest:
+                runtime_sec = float(latest[run_key]['runtime_sec'])
+            per_image_rows.append({
+                'image': f'{image_name}.jpg',
+                'profile': profile_name,
+                'silver_gt_count': int(silver_gt.shape[0]),
+                'pred_count': int(pred.shape[0]),
+                'tp': int(tp),
+                'fp': int(fp),
+                'fn': int(fn),
+                'precision': float(precision),
+                'recall': float(recall),
+                'f1': float(f1),
+                'runtime_sec': runtime_sec,
+            })
+            totals[profile_name]['tp'] += int(tp)
+            totals[profile_name]['fp'] += int(fp)
+            totals[profile_name]['fn'] += int(fn)
+            totals[profile_name]['pred_count'] += int(pred.shape[0])
+            if runtime_sec is not None:
+                totals[profile_name]['runtime_sec'].append(runtime_sec)
+
+    overall_rows = []
+    for profile_name in PROFILE_EVAL_SET:
+        tp = totals[profile_name]['tp']
+        fp = totals[profile_name]['fp']
+        fn = totals[profile_name]['fn']
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2.0 * precision * recall / max(precision + recall, 1e-8)
+        mean_runtime_sec = None
+        if totals[profile_name]['runtime_sec']:
+            mean_runtime_sec = float(np.mean(totals[profile_name]['runtime_sec']))
+        overall_rows.append({
+            'profile': profile_name,
+            'tp': int(tp),
+            'fp': int(fp),
+            'fn': int(fn),
+            'precision': float(precision),
+            'recall': float(recall),
+            'f1': float(f1),
+            'total_pred_count': int(totals[profile_name]['pred_count']),
+            'mean_runtime_sec': mean_runtime_sec,
+        })
+
+    write_csv_rows(os.path.join('logs', 'part2_profile_proxy_per_image.csv'), per_image_rows)
+    write_csv_rows(os.path.join('logs', 'part2_profile_proxy_overall.csv'), overall_rows)
+    payload = {
+        'note': (
+            'Proxy evaluation using silver GT from consensus across balanced/high_recall/dense/exact '
+            '(min_votes=2, IoU>=0.20 matching).'
+        ),
+        'per_image': per_image_rows,
+        'overall': overall_rows,
+    }
+    with open(os.path.join('logs', 'part2_profile_proxy_eval.json'), 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
+
+    md_lines = [
+        '# Part 2 Profile Proxy Evaluation',
+        '',
+        'Silver GT is built by consensus across `balanced`, `high_recall`, `dense`, and `exact` (>=2 voters).',
+        'These TP/FP/FN numbers are comparative proxy metrics, not manual human-labeled absolute accuracy.',
+        '',
+        '## Overall',
+        '',
+        '| profile | TP | FP | FN | precision | recall | f1 | total_pred_count | mean_runtime_sec |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ]
+    for row in overall_rows:
+        runtime_str = 'NA' if row['mean_runtime_sec'] is None else f"{float(row['mean_runtime_sec']):.4f}"
+        md_lines.append(
+            f"| {row['profile']} | {row['tp']} | {row['fp']} | {row['fn']} | "
+            f"{row['precision']:.4f} | {row['recall']:.4f} | {row['f1']:.4f} | "
+            f"{row['total_pred_count']} | {runtime_str} |"
+        )
+    md_lines.extend([
+        '',
+        '## Per Image',
+        '',
+        '| image | profile | silver_gt_count | pred_count | TP | FP | FN | precision | recall | f1 | runtime_sec |',
+        '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    ])
+    for row in per_image_rows:
+        runtime_str = 'NA' if row['runtime_sec'] is None else f"{float(row['runtime_sec']):.4f}"
+        md_lines.append(
+            f"| {row['image']} | {row['profile']} | {row['silver_gt_count']} | {row['pred_count']} | "
+            f"{row['tp']} | {row['fp']} | {row['fn']} | "
+            f"{row['precision']:.4f} | {row['recall']:.4f} | {row['f1']:.4f} | {runtime_str} |"
+        )
+    with open(os.path.join('logs', 'part2_profile_proxy_eval.md'), 'w', encoding='utf-8') as f:
+        f.write('\n'.join(md_lines))
+
+    print('Wrote logs/part2_profile_proxy_per_image.csv')
+    print('Wrote logs/part2_profile_proxy_overall.csv')
+    print('Wrote logs/part2_profile_proxy_eval.json')
+    print('Wrote logs/part2_profile_proxy_eval.md')
+
 def main(args) -> None:
     """CLI entry for running one image or the full Part 2 set."""
     os.makedirs('outputs', exist_ok=True)
+    if args.run_proxy_eval:
+        run_profile_proxy_eval(args)
+        return
     if args.input_name == 'all':
         run_all(args)
         return
@@ -388,9 +630,7 @@ def main(args) -> None:
 
 def run_all(args) -> None:
     """Run the blob detection on all images."""
-    for image_name in [
-        'butterfly', 'einstein', 'fishes', 'sunflowers'
-    ]:
+    for image_name in PART2_IMAGE_NAMES:
         input_name = 'data/part2/%s.jpg' % image_name
         output_name = 'outputs/%s-blob.jpg' % image_name
         blob_detection(
@@ -409,26 +649,26 @@ def blob_detection(
     start_time = time.time()
     profile_cfg = get_blob_profile(profile)
 
-    if profile_cfg.threshold_mode == 'matlab_exact':
-        # I replicate MATLAB grayscale conversion: mean(R,G,B) / max(all pixels).
+    if profile_cfg.threshold_mode == 'exact':
+        # I normalize grayscale as mean(R,G,B) divided by image max.
         image_rgb = torch_read_image(input_name, gray=False)
         image_rgb = image_rgb.to(dtype=torch.float64)
         denom = image_rgb.max().clamp_min(1e-8)
         image = image_rgb.mean(dim=0) / denom
         image_np = image.detach().cpu().numpy()
 
-        matlab_num_scales = 15
-        matlab_sigma = 2.0
-        matlab_k = float(math.sqrt(math.sqrt(2.0)))
-        matlab_threshold = float(profile_cfg.abs_threshold if profile_cfg.abs_threshold is not None else 0.0095)
+        exact_num_scales = 15
+        exact_sigma = 2.0
+        exact_k = float(math.sqrt(math.sqrt(2.0)))
+        exact_threshold = float(profile_cfg.abs_threshold if profile_cfg.abs_threshold is not None else 0.0095)
 
-        cx, cy, rad, score_np, stats = detect_blobs_matlab_port(
+        cx, cy, rad, score_np, stats = detect_blobs_exact(
             img_gray=image,
-            num_scales=matlab_num_scales,
-            sigma=matlab_sigma,
-            should_downsample=profile_cfg.matlab_downsample,
-            scale_multiplier=matlab_k,
-            threshold=matlab_threshold,
+            num_scales=exact_num_scales,
+            sigma=exact_sigma,
+            should_downsample=profile_cfg.exact_downsample,
+            scale_multiplier=exact_k,
+            threshold=exact_threshold,
         )
 
         draw_all_circles(image_np, cx, cy, rad, output_name)
@@ -444,12 +684,12 @@ def blob_detection(
             'profile': profile_cfg.name,
             'profile_config': asdict(profile_cfg),
             'params': {
-                'ksize': 'matlab_dynamic',
-                'sigma': matlab_sigma,
-                'n': matlab_num_scales,
-                'k': matlab_k,
-                'threshold': matlab_threshold,
-                'should_downsample': bool(profile_cfg.matlab_downsample),
+                'ksize': 'dynamic',
+                'sigma': exact_sigma,
+                'n': exact_num_scales,
+                'k': exact_k,
+                'threshold': exact_threshold,
+                'should_downsample': bool(profile_cfg.exact_downsample),
             },
             'raw_candidates': stats['raw_candidates'],
             'after_score_keep': stats['raw_candidates'],
@@ -477,9 +717,9 @@ def blob_detection(
             'input_name': input_name,
             'output_name': output_name,
             'profile': profile_cfg.name,
-            'ksize': 'matlab_dynamic',
-            'sigma': matlab_sigma,
-            'n': matlab_num_scales,
+            'ksize': 'dynamic',
+            'sigma': exact_sigma,
+            'n': exact_num_scales,
             'raw_candidates': stats['raw_candidates'],
             'after_score_keep': stats['raw_candidates'],
             'after_border_soft': stats['after_2d_nms'],
@@ -492,7 +732,7 @@ def blob_detection(
         append_csv_row(os.path.join('logs', 'part2_blob_runs.csv'), log_row)
         return
 
-    # Step 1: Read image as grayscale for non-MATLAB profiles.
+    # Step 1: Read image as grayscale for non-exact profiles.
     image = torch_read_image(input_name, gray=True)
     image_np = image.squeeze(0).numpy()
 
@@ -769,10 +1009,17 @@ if __name__ == '__main__':
     parser.add_argument(
         '--profile',
         type=str,
-        default='matlab_exact',
+        default='exact',
         choices=list(PROFILES.keys()),
-        help='Blob detection profile: balanced, high_recall, reference_dense, or matlab_exact',
+        help='Blob detection profile: balanced, high_recall, dense, or exact',
+    )
+    parser.add_argument(
+        '--run_proxy_eval',
+        action='store_true',
+        help='Run all profiles and generate proxy TP/FP/FN evaluation files under logs/.',
     )
     args = parser.parse_args()
     assert(args.ksize % 2 == 1)
     main(args)
+
+

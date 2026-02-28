@@ -12,6 +12,7 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+__MACOSX/
 
 # Runtime-generated artifacts
 logs/**
@@ -37,3 +38,13 @@ outputs/**
 !outputs/profile_compare/
 !outputs/.gitkeep
 !outputs/profile_compare/.gitkeep
+
+# Local large/generated docs and archives
+main.pdf
+mkamrul_hw1.pdf
+report_template.zip
+
+# LaTeX build outputs
+report_template/main.aux
+report_template/main.log
+report_template/main.pdf

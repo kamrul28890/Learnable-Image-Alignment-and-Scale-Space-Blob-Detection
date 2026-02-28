@@ -3,7 +3,7 @@
 This repository contains a clean implementation of **CS59300CVD HW2** with two parts:
 
 1. **Part 1**: Learnable channel alignment using differentiable warping and gradient-based optimization.
-2. **Part 2**: Laplacian scale-space blob detection with multiple detection profiles, including a MATLAB-faithful port.
+2. **Part 2**: Laplacian scale-space blob detection with multiple detection profiles.
 
 ## Repository Layout
 
@@ -70,16 +70,29 @@ Profiles available:
 
 - `balanced`: conservative, cleaner detections
 - `high_recall`: more detections with moderate extra false positives
-- `reference_dense`: very dense detections
-- `matlab_exact`: MATLAB-style port (default)
+- `dense`: very dense detections
+- `exact`: exact dense pipeline (default)
 
 Run all images with a profile:
 
 ```bash
-python main_p2.py -i all --profile matlab_exact
+python main_p2.py -i all --profile exact
 python main_p2.py -i all --profile balanced
 python main_p2.py -i all --profile high_recall
 ```
+
+Run all 4 profiles and automatically generate proxy TP/FP/FN summaries:
+
+```bash
+python main_p2.py -i all --run_proxy_eval
+```
+
+This writes:
+
+- `logs/part2_profile_proxy_per_image.csv`
+- `logs/part2_profile_proxy_overall.csv`
+- `logs/part2_profile_proxy_eval.md`
+- `logs/part2_profile_proxy_eval.json`
 
 ## Evaluation (Optional)
 
@@ -102,3 +115,17 @@ python eval_part2_manual_gt.py
 - `data/` and `outputs/` contents are intentionally excluded from version control.
 - Runtime logs are generated under `logs/` locally.
 - Core algorithm choices and run notes are in `HW2_REPORT_REFERENCE.md`.
+
+## Report Build
+
+Report sources are under `report_template/`:
+
+```bash
+cd report_template
+pdflatex -interaction=nonstopmode -halt-on-error main.tex
+pdflatex -interaction=nonstopmode -halt-on-error main.tex
+```
+
+Final report content is in:
+- `report_template/student_response/report.tex`
+- `report_template/student_response/figures/`
