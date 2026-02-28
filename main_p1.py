@@ -13,17 +13,18 @@ def main():
   args = parser.parse_args()
   print(args.image_name)
   if args.image_name == 'all':
-    run_all()
+    run_all(metric=args.metric)
     return
 
   model = DiffAlignment(args.image_name, metric=args.metric)
   model.align()
   model.save('outputs/%s_%s_aligned_DIFF.png' % (args.image_name.split('.')[0], args.metric))
 
-def run_all():
+def run_all(metric=None):
   """Run the alignment model on all images."""
   os.makedirs('outputs', exist_ok=True)
-  for metric in ['ncc', 'mse']:
+  metrics = ['ncc', 'mse'] if metric is None else [metric]
+  for metric in metrics:
     for image_id in range(1, 7):
       image_name = 'data/part1/%d.jpg' % image_id
       model = DiffAlignment(image_name, metric=metric)

@@ -1,6 +1,39 @@
-.venv/
+﻿# Python artifacts
 __pycache__/
 *.py[cod]
+*.pyo
+
+# Virtual envs
+.venv/
+venv/
+
+# OS/editor
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
+
+# Runtime-generated artifacts
+logs/**
+!logs/.gitkeep
+
+# Local research/reference artifacts
+Lecture Slides/
+Reference/
+
+# Keep input/output folder structure, but not file contents
+# data/
+data/**
+!data/
+!data/part1/
+!data/part2/
+!data/.gitkeep
+!data/part1/.gitkeep
+!data/part2/.gitkeep
+
+# outputs/
+outputs/**
+!outputs/
+!outputs/profile_compare/
+!outputs/.gitkeep
+!outputs/profile_compare/.gitkeep

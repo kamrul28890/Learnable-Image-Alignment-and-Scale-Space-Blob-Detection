@@ -1,3 +1,5 @@
+"""Drawing helpers for overlaying detected circles."""
+
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -19,6 +21,7 @@ def draw_all_circles(
     color: circle color, default to 'r' (red)
     """
     if image.shape[0] == 1:
+        # Convert [1, H, W] to [3, H, W] for consistent matplotlib behavior.
         image = np.concatenate([image, image, image], 0)
     fig, ax = plt.subplots()
     ax.set_aspect('equal')
@@ -29,4 +32,3 @@ def draw_all_circles(
 
     plt.title('%i circles' % len(cx))
     plt.savefig(filename)
-

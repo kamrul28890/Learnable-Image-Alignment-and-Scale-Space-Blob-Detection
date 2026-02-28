@@ -1,165 +1,104 @@
-# CS59300CVD — Assignment 2: Learnable Alignment & Blob Detection
+﻿# Learnable Image Alignment and Scale-Space Blob Detection
 
-## Overview
+This repository contains a clean implementation of **CS59300CVD HW2** with two parts:
 
-This repository contains two computer vision implementations:
+1. **Part 1**: Learnable channel alignment using differentiable warping and gradient-based optimization.
+2. **Part 2**: Laplacian scale-space blob detection with multiple detection profiles, including a MATLAB-faithful port.
 
-- **Part 1**: Differentiable image alignment using spatial transformers and
-  gradient descent (AdamW) to colourise Prokudin-Gorsky tri-plate photographs.
-- **Part 2**: Scale-space blob detection using the Laplacian of Gaussian (LoG)
-  with a downsampling pyramid and 3-D non-maximum suppression.
+## Repository Layout
 
----
-
-## Directory Structure
-
-```
-starter_code/
-├── alignment_model.py      # Base class: exhaustive search alignment (coarse-to-fine)
-├── diff_alignment.py       # DiffAlignment + AlignNet: gradient-descent alignment
-├── main_p1.py              # CLI for Part 1
-├── main_p2.py              # CLI for Part 2 (blob detection)
-├── metrics.py              # ncc, mse, ssim loss functions
-├── utils/
-│   ├── misc_helper.py      # custom_shifts (circular / zero padding)
-│   ├── io_helper.py        # torch_read_image, torch_save_image
-│   └── draw_helper.py      # draw_all_circles (matplotlib)
-├── data/
-│   ├── part1/              # 1.jpg – 6.jpg (tri-plate images)
-│   └── part2/              # butterfly, einstein, fishes, sunflowers
-├── outputs/                # Created automatically on first run
-└── README.md
-```
-
----
+- `alignment_model.py`: starter/base alignment model interface.
+- `diff_alignment.py`: final differentiable alignment implementation.
+- `main_p1.py`: Part 1 entry point.
+- `main_p2.py`: Part 2 entry point.
+- `metrics.py`: NCC/MSE/SSIM metrics.
+- `utils/`: I/O, drawing, and helper utilities.
+- `eval_part2_proxy.py`: proxy evaluation for Part 2.
+- `eval_part2_manual_gt.py`: manual GT evaluation for Part 2.
+- `manual_gt_workflow.py`: interactive manual GT annotation workflow.
+- `data/`: input folder structure only (`part1/`, `part2/`).
+- `outputs/`: output folder structure only.
 
 ## Requirements
 
-### Python version
-```
-Python >= 3.10  (required for `X | Y` union type hints)
-```
-
-### Packages
-Install dependencies with:
-```bash
-pip install torch torchvision scikit-image matplotlib numpy
-```
-
-| Package        | Tested version |
-|----------------|---------------|
-| torch          | 2.2.0         |
-| torchvision    | 0.17.0        |
-| scikit-image   | 0.22.0        |
-| matplotlib     | 3.8.2         |
-| numpy          | 1.26.4        |
-
-> **GPU note**: The code automatically detects CUDA. If no GPU is available,
-> it falls back to CPU transparently — no changes needed.
-
----
-
-## Part 1 — Differentiable Alignment
-
-### How it works
-
-1. Load the stacked tri-plate JPEG (grayscale, normalised to [0, 1]).
-2. Crop ~6 % film borders from all sides to remove dark film artefacts.
-3. Split into three equal horizontal strips: Blue (top), Green (middle), Red (bottom).
-4. For each of G→B and R→B: instantiate `AlignNet`, a tiny network whose only
-   parameters are two learnable translation values `(tx, ty)` in normalised
-   coordinates [-1, 1].
-5. Apply the translation differentiably via `affine_grid` + `grid_sample`.
-6. Minimise the chosen loss (MSE or NCC) with AdamW for 5000 steps.
-7. Convert the final normalised shift to integer pixel offsets and apply with
-   `custom_shifts`.
-8. Stack the aligned channels as `(R, G, B)` and save.
-
-### Run a single image
+- Python `>=3.10`
+- Install dependencies:
 
 ```bash
-cd starter_code
-python main_p1.py -i data/part1/1.jpg -m mse
+python -m pip install -r requirements.txt
 ```
 
-### Run all images with NCC
+## Setup
+
+```bash
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+## Data
+
+Input images are intentionally **not committed**.
+
+Populate:
+
+- `data/part1/` with assignment Part 1 images (`1.jpg` ... `6.jpg`)
+- `data/part2/` with assignment Part 2 images (`butterfly.jpg`, `einstein.jpg`, `fishes.jpg`, `sunflowers.jpg`)
+
+## Run Instructions
+
+### Part 1
+
+Single image:
+
+```bash
+python main_p1.py -i data/part1/1.jpg -m ncc
+```
+
+All images:
 
 ```bash
 python main_p1.py -i all -m ncc
+python main_p1.py -i all -m mse
 ```
 
-### Options
+### Part 2
 
-| Flag       | Default | Description                                      |
-|------------|---------|--------------------------------------------------|
-| `-i`       | —       | Image path, or `all` for all 6 Part 1 images     |
-| `-m`       | `mse`   | Loss metric: `mse` or `ncc`                      |
-| `--lr`     | `0.005` | AdamW learning rate                              |
-| `--steps`  | `5000`  | Number of gradient-descent iterations            |
+Profiles available:
 
-### Outputs
+- `balanced`: conservative, cleaner detections
+- `high_recall`: more detections with moderate extra false positives
+- `reference_dense`: very dense detections
+- `matlab_exact`: MATLAB-style port (default)
 
-Results are saved to `outputs/<id>_<metric>_aligned_DIFF.png`.
-
----
-
-## Part 2 — LoG Blob Detection
-
-### How it works
-
-1. Load the image as grayscale, normalised to [0, 1].
-2. Build a scale-normalised LoG kernel: `σ² · ∇²G(x, y; σ)`.
-3. Build a scale-space pyramid by progressively **downsampling** the image by
-   factor `1/k` at each level (equivalent to increasing the kernel size by `k`,
-   but computationally cheaper). The LoG kernel size stays fixed.
-4. Apply the LoG filter at each pyramid level; upsample responses back to the
-   original resolution.
-5. Stack squared responses into a 3-D volume `(n, H, W)`.
-6. Run 3-D NMS using `max_pool3d` to find local maxima across space and scale.
-7. Draw circles at detected keypoints with radius `σ · √2`.
-
-### Run a single image
+Run all images with a profile:
 
 ```bash
-python main_p2.py -i data/part2/butterfly.jpg -s 2.0 -k 1.5 -n 10 --ksize 15
+python main_p2.py -i all --profile matlab_exact
+python main_p2.py -i all --profile balanced
+python main_p2.py -i all --profile high_recall
 ```
 
-### Run all images
+## Evaluation (Optional)
+
+Proxy evaluation:
 
 ```bash
-python main_p2.py -i all -s 2.0 -k 1.5 -n 10 --ksize 15
+python eval_part2_proxy.py
 ```
 
-### Options
+Manual GT workflow:
 
-| Flag          | Default | Description                                         |
-|---------------|---------|-----------------------------------------------------|
-| `-i`          | —       | Image path, or `all` for all 4 Part 2 images        |
-| `-s`          | `2.0`   | Base sigma (scale) for LoG kernel                   |
-| `-k`          | `1.5`   | Scale factor between pyramid levels                 |
-| `-n`          | `10`    | Number of pyramid levels                            |
-| `--ksize`     | `15`    | LoG kernel side length (must be odd)                |
-| `--threshold` | `0.003` | NMS response threshold (lower → more keypoints)     |
-
-### Recommended parameters per image
-
-| Image       | sigma | k   | n  | ksize | threshold |
-|-------------|-------|-----|----|-------|-----------|
-| butterfly   | 2.0   | 1.5 | 10 | 15    | 0.003     |
-| einstein    | 3.0   | 1.5 | 8  | 15    | 0.003     |
-| fishes      | 4.0   | 1.5 | 8  | 15    | 0.005     |
-| sunflowers  | 5.0   | 1.5 | 8  | 15    | 0.005     |
-
-### Outputs
-
-Results are saved to `outputs/<name>-blob.jpg`.
-
----
-
-## Code Style
-
-All code follows **PEP 8**. To verify:
 ```bash
-pip install pycodestyle
-pycodestyle alignment_model.py diff_alignment.py main_p1.py main_p2.py metrics.py
+python manual_gt_workflow.py --mode bootstrap --bootstrap_source silver
+python manual_gt_workflow.py --mode annotate
+python eval_part2_manual_gt.py
 ```
+
+## Reproducibility Notes
+
+- `data/` and `outputs/` contents are intentionally excluded from version control.
+- Runtime logs are generated under `logs/` locally.
+- Core algorithm choices and run notes are in `HW2_REPORT_REFERENCE.md`.
